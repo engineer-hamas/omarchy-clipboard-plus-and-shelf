@@ -5,12 +5,15 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 import "ClipboardHistory.js" as ClipboardHistory
+import "ClipboardShelf.js" as ClipboardShelf
 
 Item {
   id: root
 
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property bool opened: false
+  property bool shelfMode: false
+  property bool deleteShelfConfirmOpen: false
   property string filterText: ""
   property string typeFilter: "all"
   property int selectedIndex: 0
@@ -45,6 +48,28 @@ Item {
   property int expandedTotalLength: 0
 
   property string historyPath: Quickshell.env("HOME") + "/.local/state/omarchy/clipboard-history.json"
+
+  property var shelves: []
+  property string shelvesStatus: "loading"
+  property bool shelvesContainsOversized: false
+  property string shelvesError: ""
+  property bool shelfReadInFlight: false
+  property bool shelfReadPending: false
+  property bool shelfReadTimedOut: false
+  property bool shelfWritePending: false
+  property bool shelfWriteReportedSaved: false
+  property bool shelfWriteFailed: false
+  property var shelfWriteExpected: null
+  property bool shelfDoubleWriteNewline: false
+  property int activeShelfIndex: 0
+  property int savedHistorySelectedIndex: 0
+  property int savedShelfSelectedIndex: 0
+  property string shelfNotice: ""
+  property bool shelfRenaming: false
+
+  property string shelfPath: Quickshell.env("HOME") + "/.local/state/omarchy/clipboard-shelf.json"
+  readonly property int shelfLimit: ClipboardShelf.maxItemsPerShelf
+  readonly property int shelfMaxCount: ClipboardShelf.maxShelves
   property color background: Color.menu.background
   property color foreground: Color.menu.text
   property color border: Color.menu.border
@@ -66,6 +91,15 @@ Item {
 
   readonly property var typeFilters: ["all", "text", "images", "colors"]
 
+  readonly property var activeModel: root.shelfMode ? shelfModel : displayModel
+  readonly property int viewCount: root.shelfMode ? shelfModel.count : displayModel.count
+  readonly property bool modalOpen: root.clearConfirmOpen || root.deleteShelfConfirmOpen
+
+  function viewItemAt(index) {
+    if (index < 0 || index >= root.activeModel.count) return null
+    return root.activeModel.get(index)
+  }
+
   function open(payloadJson) {
     root.cancelEditedHistoryAction()
     root.opened = true
@@ -78,16 +112,24 @@ Item {
     root.editorError = ""
     root.editorAcceptedText = ""
     textEditor.text = ""
+    root.shelfMode = false
+    root.deleteShelfConfirmOpen = false
+    root.shelfRenaming = false
+    root.shelfNotice = ""
+    root.savedHistorySelectedIndex = 0
+    root.savedShelfSelectedIndex = 0
     root.disarmPointer()
-    root.rebuildDisplay()
+    root.rebuildActiveView()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function close() {
     root.cancelEditedHistoryAction()
     root.cancelClearHistory(false)
+    root.cancelDeleteShelf(false)
     root.previewExpanded = false
     root.editorOpen = false
+    root.shelfRenaming = false
     root.editorError = ""
     textEditor.text = ""
     root.opened = false
@@ -111,7 +153,7 @@ Item {
     } else if (!root.historyContainsOversized) {
       root.historyError = ""
     }
-    if (root.opened) root.rebuildDisplay()
+    if (root.opened) root.rebuildActiveView()
   }
 
   function resetHistoryWrite() {
@@ -259,6 +301,454 @@ Item {
     return false
   }
 
+  function shelfValidateItems(items) {
+    return ClipboardHistory.validateHistory(items, root.shelfLimit, false)
+  }
+
+  function activeShelf() {
+    if (!Array.isArray(root.shelves) || root.shelves.length === 0)
+      return { name: "Default", items: [] }
+    var index = root.activeShelfIndex
+    if (index < 0 || index >= root.shelves.length) index = 0
+    return root.shelves[index]
+  }
+
+  function activeShelfName() {
+    return String(root.activeShelf().name || "Default")
+  }
+
+  function activeShelfItems() {
+    var items = root.activeShelf().items
+    return Array.isArray(items) ? items : []
+  }
+
+  function shelfWritable() {
+    return root.shelvesStatus === "ok"
+        && !root.shelfWritePending
+        && !root.shelfReadPending
+        && !root.shelfReadInFlight
+  }
+
+  function applyShelvesResult(result) {
+    root.shelvesStatus = result.status
+    root.shelvesContainsOversized = !!result.containsOversized
+    root.shelves = Array.isArray(result.shelves) ? result.shelves : []
+    root.shelves = ClipboardShelf.ensureShelf(root.shelves)
+    if (root.activeShelfIndex > root.shelves.length - 1) root.activeShelfIndex = root.shelves.length - 1
+    if (root.shelfMode && root.selectedIndex > root.activeShelfItems().length - 1)
+      root.selectedIndex = Math.max(0, root.activeShelfItems().length - 1)
+    if (result.status !== "ok") {
+      root.shelfRenaming = false
+      root.editorOpen = false
+      root.editorError = ""
+    } else if (!root.shelvesContainsOversized) {
+      root.shelvesError = ""
+    }
+    if (root.opened && root.shelfMode) root.rebuildShelfDisplay()
+  }
+
+  function resetShelfWrite() {
+    root.shelfWritePending = false
+    root.shelfWriteReportedSaved = false
+    root.shelfWriteFailed = false
+    root.shelfWriteExpected = null
+  }
+
+  function resolveShelvesResult(result) {
+    if (!root.shelfWritePending) {
+      root.applyShelvesResult(result)
+      return
+    }
+    var disposition = ClipboardShelf.shelfWriteDisposition(
+      result,
+      root.shelfWriteExpected,
+      root.shelfWriteReportedSaved,
+      root.shelfWriteFailed
+    )
+    if (disposition === "pending") return
+
+    var writeSucceeded = disposition === "confirmed"
+    root.resetShelfWrite()
+    if (writeSucceeded) {
+      root.applyShelvesResult(result)
+      return
+    }
+    root.applyShelvesResult(result)
+    root.shelvesError = "Could not confirm the shelf update on disk"
+  }
+
+  function loadShelves(raw) {
+    var text = String(raw || "")
+    if (text.trim().length === 0) {
+      root.bootstrapShelf()
+      return
+    }
+    root.resolveShelvesResult(ClipboardShelf.validateShelves(text, root.shelfValidateItems))
+  }
+
+  function refuseShelves(status) {
+    root.resolveShelvesResult({ status: status, shelves: [], containsOversized: false })
+  }
+
+  function bootstrapShelf() {
+    root.shelvesStatus = "ok"
+    root.shelves = ClipboardShelf.ensureShelf(root.shelves)
+    root.shelvesError = ""
+    root.saveShelves()
+    if (root.opened && root.shelfMode) root.rebuildShelfDisplay()
+  }
+
+  function emptyShelfText() {
+    if (root.shelvesStatus === "loading") return "Loading shelves…"
+    if (root.shelvesStatus === "oversized") return "A shelf is too large"
+    if (root.shelvesStatus === "unreadable") return "Shelves are unavailable"
+    if (root.shelvesStatus === "invalid") return "Shelf data is invalid"
+    if (root.shelves.length === 0) return "No shelves"
+    if (root.activeShelfItems().length === 0) return "Shelf “" + root.activeShelfName() + "” is empty"
+    if (!root.filterText) return "No items for this filter"
+    return "No matches for “" + root.filterText + "”"
+  }
+
+  function scheduleShelfReload() {
+    root.shelfReadPending = true
+    shelfReloadTimer.restart()
+  }
+
+  function startShelfRead() {
+    if (root.shelfReadInFlight) return
+
+    root.shelfReadPending = false
+    root.shelfReadTimedOut = false
+    root.shelfReadInFlight = true
+    shelfReadProcess.command = [
+      "head",
+      "-c",
+      String(ClipboardShelf.maxShelfFileBytes + 1),
+      "--",
+      root.shelfPath
+    ]
+    shelfReadProcess.running = true
+    shelfReadWatchdog.restart()
+  }
+
+  function finishShelfRead(exitCode) {
+    if (!root.shelfReadInFlight) return
+
+    shelfReadWatchdog.stop()
+    root.shelfReadInFlight = false
+    if (root.shelfReadPending) {
+      shelfReloadTimer.restart()
+      return
+    }
+
+    if (root.shelfReadTimedOut) {
+      root.refuseShelves("unreadable")
+    } else if (exitCode !== 0) {
+      root.bootstrapShelf()
+    } else if (shelfReadOutput.data.byteLength > ClipboardShelf.maxShelfFileBytes) {
+      root.refuseShelves("oversized")
+    } else {
+      root.loadShelves(shelfReadOutput.text)
+    }
+  }
+
+  function saveShelves() {
+    if (root.shelvesStatus !== "ok") {
+      root.shelvesError = "Shelves are unavailable; reload before modifying them"
+      return false
+    }
+    if (root.shelfWritePending) {
+      root.shelvesError = "Shelf update is still being confirmed"
+      return false
+    }
+    if (root.shelfReadPending || root.shelfReadInFlight) {
+      root.shelvesError = "Shelf reload is still in progress"
+      return false
+    }
+
+    var serialized = ClipboardShelf.serializeShelves(
+      root.shelves,
+      root.shelfValidateItems,
+      ClipboardHistory.utf8ByteLength,
+      root.shelfDoubleWriteNewline ? 2 : 1
+    )
+    if (serialized.status !== "ok") {
+      root.shelvesError = serialized.containsOversized
+        ? "A shelf contains oversized entries"
+        : "Shelf data exceeds its size limit"
+      return false
+    }
+
+    root.shelfDoubleWriteNewline = !root.shelfDoubleWriteNewline
+    root.shelvesError = ""
+    shelfFile.setText(serialized.text)
+    root.shelfWriteExpected = root.shelves
+    root.shelfWriteReportedSaved = false
+    root.shelfWriteFailed = false
+    root.shelfWritePending = true
+    return true
+  }
+
+  function addSelectedToShelf() {
+    if (!root.shelfWritable()) {
+      root.shelfNotice = ""
+      root.shelvesError = root.shelvesError || "Shelves are not ready yet"
+      return
+    }
+    var row = root.viewItemAt(root.selectedIndex)
+    if (!row) return
+    if (root.activeShelfItems().length >= root.shelfLimit) {
+      root.shelvesError = "Shelf “" + root.activeShelfName() + "” is full (" + root.shelfLimit + " items)"
+      return
+    }
+
+    var shelfEntry
+    if (row.entryType === "image") {
+      shelfEntry = { type: "image", path: row.path, mime: row.mime }
+    } else if (row.entryType === "oversized") {
+      root.shelvesError = "Oversized clipboard text cannot be added to a shelf"
+      return
+    } else {
+      var text = ClipboardHistory.entryText(root.history, row.historyIndex)
+      if (!text) {
+        root.shelvesError = "This clipboard item cannot be added to a shelf"
+        return
+      }
+      shelfEntry = { type: "text", text: text }
+    }
+
+    var previous = root.shelves
+    var added = ClipboardHistory.addEntry(root.activeShelfItems(), shelfEntry, root.shelfLimit)
+    if (added.status !== "ok") {
+      root.shelvesError = added.status === "oversized"
+        ? "Adding this item would exceed a size limit"
+        : "This item cannot be added to a shelf"
+      return
+    }
+
+    root.shelves = ClipboardShelf.replaceShelfItems(root.shelves, root.activeShelfIndex, added.entries)
+    if (!root.saveShelves()) {
+      root.shelves = previous
+      return
+    }
+    root.shelvesError = ""
+    root.shelfNotice = "Added to “" + root.activeShelfName() + "”"
+    root.rebuildShelfDisplay()
+  }
+
+  function shelfRemoveSelected() {
+    if (!root.shelfWritable()) return
+    var row = root.viewItemAt(root.selectedIndex)
+    if (!row) return
+
+    var previous = root.shelves
+    var items = root.activeShelfItems()
+    var index = row.historyIndex
+    if (index < 0 || index >= items.length) return
+    root.shelves = ClipboardShelf.replaceShelfItems(
+      root.shelves,
+      root.activeShelfIndex,
+      ClipboardHistory.removeEntryAt(items, index)
+    )
+    if (!root.saveShelves()) {
+      root.shelves = previous
+      return
+    }
+
+    if (root.viewCount <= 1) {
+      root.selectedIndex = 0
+      root.cursorActive = false
+    } else if (root.selectedIndex >= root.viewCount - 1) {
+      root.selectedIndex = root.viewCount - 2
+    }
+    root.shelfNotice = "Removed from “" + root.activeShelfName() + "”"
+    root.disarmPointer()
+    root.rebuildShelfDisplay()
+  }
+
+  function requestDeleteShelf() {
+    if (!root.shelfWritable()) return
+    deleteShelfConfirm.selectedIndex = 1
+    root.deleteShelfConfirmOpen = true
+  }
+
+  function cancelDeleteShelf(refocus) {
+    root.deleteShelfConfirmOpen = false
+    root.disarmPointer()
+    if (refocus === undefined || refocus)
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function confirmDeleteShelf() {
+    if (!root.shelfWritable()) return
+
+    var previous = root.shelves
+    root.shelves = ClipboardShelf.removeShelf(root.shelves, root.activeShelfIndex)
+    root.shelves = ClipboardShelf.ensureShelf(root.shelves)
+    if (root.activeShelfIndex > root.shelves.length - 1) root.activeShelfIndex = root.shelves.length - 1
+    if (!root.saveShelves()) {
+      root.shelves = previous
+      return
+    }
+
+    root.selectedIndex = 0
+    root.cursorActive = false
+    root.shelfNotice = ""
+    root.deleteShelfConfirmOpen = false
+    root.disarmPointer()
+    root.rebuildShelfDisplay()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function setShelfMode(on) {
+    if (on === root.shelfMode) return
+    if (on) {
+      root.savedHistorySelectedIndex = root.selectedIndex
+      root.shelfMode = true
+      root.selectedIndex = Math.min(root.savedShelfSelectedIndex, Math.max(0, root.activeShelfItems().length - 1))
+      root.shelfNotice = ""
+    } else {
+      root.savedShelfSelectedIndex = root.selectedIndex
+      root.shelfMode = false
+      root.selectedIndex = root.savedHistorySelectedIndex
+      root.shelfNotice = ""
+    }
+    root.previewExpanded = false
+    root.editorOpen = false
+    root.shelfRenaming = false
+    root.rebuildActiveView()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function cycleShelf(delta) {
+    if (root.shelves.length <= 1) return
+    var next = (root.activeShelfIndex + delta + root.shelves.length) % root.shelves.length
+    root.savedShelfSelectedIndex = root.selectedIndex
+    root.activeShelfIndex = next
+    root.selectedIndex = 0
+    root.shelfNotice = ""
+    root.rebuildShelfDisplay()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function startShelfRename() {
+    if (root.shelvesStatus !== "ok") {
+      root.shelvesError = "Shelves are not ready to rename yet"
+      return
+    }
+    root.previewExpanded = false
+    root.editorError = ""
+    root.editorAcceptedText = ""
+    root.shelfRenaming = true
+    root.editorOpen = true
+    textEditor.text = root.activeShelfName()
+    editorScroll.contentY = 0
+    Qt.callLater(function() {
+      textEditor.forceActiveFocus()
+      textEditor.cursorPosition = textEditor.length
+    })
+  }
+
+  function cancelShelfRename() {
+    root.shelfRenaming = false
+    root.editorOpen = false
+    root.editorError = ""
+    root.editorAcceptedText = ""
+    textEditor.text = ""
+    root.shelvesError = ""
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function finishShelfRename() {
+    if (!root.shelfWritable()) {
+      root.editorError = root.shelvesError || "Shelves are not ready yet"
+      return
+    }
+    var name = ClipboardShelf.normalizedShelfName(textEditor.text)
+    if (!name) {
+      root.editorError = "Shelf name cannot be blank"
+      return
+    }
+    var previous = root.shelves
+    root.shelves = ClipboardShelf.renameShelf(root.shelves, root.activeShelfIndex, name)
+    if (!root.saveShelves()) {
+      root.shelves = previous
+      root.editorError = root.shelvesError || "Could not save the shelf name"
+      return
+    }
+    root.shelfRenaming = false
+    root.editorOpen = false
+    root.editorError = ""
+    root.editorAcceptedText = ""
+    textEditor.text = ""
+    root.shelvesError = ""
+    root.shelfNotice = "Renamed to “" + root.activeShelfName() + "”"
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function pasteWholeShelf() {
+    var items = root.activeShelfItems()
+    if (items.length === 0) {
+      root.shelvesError = "Shelf “" + root.activeShelfName() + "” is empty"
+      return
+    }
+    var textParts = []
+    var images = []
+    for (var i = 0; i < items.length; i++) {
+      var item = ClipboardHistory.normalizeEntry(items[i])
+      if (!item) continue
+      if (item.type === "image") {
+        if (item.path) images.push(item)
+      } else if (!item.oversized) {
+        textParts.push(item.text || "")
+      }
+    }
+    root.opened = false
+    if (textParts.length > 0) {
+      Quickshell.execDetached([
+        root.omarchyPath + "/bin/omarchy-clipboard-paste-text",
+        "--shift-insert",
+        textParts.join("\n")
+      ])
+    }
+    for (var j = 0; j < images.length; j++) {
+      Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", images[j].mime, images[j].path])
+    }
+  }
+
+  function rebuildActiveView() {
+    if (root.shelfMode) root.rebuildShelfDisplay()
+    else root.rebuildDisplay()
+  }
+
+  function rebuildShelfDisplay() {
+    var rows = ClipboardHistory.displayRows(root.activeShelfItems(), root.filterText, root.displayLimit, root.typeFilter)
+
+    shelfModel.clear()
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i]
+      shelfModel.append({
+        entryType: row.entryType,
+        fullText: row.fullText,
+        previewText: row.previewText,
+        previewImage: row.previewImage ? Util.fileUrl(row.previewImage) : "",
+        swatchColor: row.color || "",
+        path: row.path,
+        mime: row.mime,
+        historyIndex: row.index
+      })
+    }
+
+    var maxCount = Math.max(0, shelfModel.count - 1)
+    if (shelfModel.count === 0) root.selectedIndex = 0
+    else if (root.selectedIndex > maxCount) root.selectedIndex = maxCount
+    else if (root.selectedIndex < 0) root.selectedIndex = 0
+
+    Qt.callLater(function() {
+      if (shelfModel.count > 0) resultList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+    })
+  }
+
   function requestClearHistory() {
     if (root.historyActionBlocked()) return
     if (root.historyStatus !== "ok"
@@ -342,27 +832,44 @@ Item {
   }
 
   function selectedRow() {
-    if (displayModel.count === 0 || root.selectedIndex < 0 || root.selectedIndex >= displayModel.count) return null
-    return displayModel.get(root.selectedIndex)
+    return root.viewItemAt(root.selectedIndex)
+  }
+
+  function viewTextAt(index) {
+    if (root.shelfMode) {
+      var items = root.activeShelfItems()
+      if (index < 0 || index >= items.length) return ""
+      var entry = ClipboardHistory.normalizeEntry(items[index])
+      return entry && entry.type === "text" && !entry.oversized ? String(entry.text || "") : ""
+    }
+    return ClipboardHistory.entryText(root.history, index)
+  }
+
+  function viewTextPreview(index, limit) {
+    var text = root.viewTextAt(index)
+    var max = Number(limit)
+    if (isNaN(max) || max <= 0 || text.length <= max)
+      return { text: text, truncated: false, totalLength: text.length }
+    return { text: text.slice(0, max), truncated: true, totalLength: text.length }
   }
 
   function select(delta) {
-    if (displayModel.count === 0) return
+    if (root.viewCount === 0) return
     root.disarmPointer()
     if (!root.cursorActive) {
       root.cursorActive = true
-      root.selectedIndex = delta < 0 ? displayModel.count - 1 : 0
+      root.selectedIndex = delta < 0 ? root.viewCount - 1 : 0
     } else {
-      root.selectedIndex = (root.selectedIndex + delta + displayModel.count) % displayModel.count
+      root.selectedIndex = (root.selectedIndex + delta + root.viewCount) % root.viewCount
     }
     resultList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
 
   function selectAbsolute(index) {
-    if (displayModel.count === 0) return
+    if (root.viewCount === 0) return
     root.disarmPointer()
     root.cursorActive = true
-    root.selectedIndex = Math.max(0, Math.min(index, displayModel.count - 1))
+    root.selectedIndex = Math.max(0, Math.min(index, root.viewCount - 1))
     resultList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
 
@@ -371,7 +878,7 @@ Item {
     root.selectedIndex = 0
     root.cursorActive = true
     root.disarmPointer()
-    root.rebuildDisplay()
+    root.rebuildActiveView()
   }
 
   function setTypeFilter(nextFilter) {
@@ -380,7 +887,7 @@ Item {
     root.selectedIndex = 0
     root.cursorActive = true
     root.disarmPointer()
-    root.rebuildDisplay()
+    root.rebuildActiveView()
   }
 
   function cycleTypeFilter(delta) {
@@ -399,23 +906,34 @@ Item {
   }
 
   function activateIndex(index) {
-    if (index < 0 || index >= displayModel.count) return
-    root.applySelected(displayModel.get(index))
+    if (index < 0 || index >= root.activeModel.count) return
+    root.applySelected(root.activeModel.get(index))
   }
 
   function copyIndex(index) {
-    if (index < 0 || index >= displayModel.count) return
-    root.copySelected(displayModel.get(index))
+    if (index < 0 || index >= root.activeModel.count) return
+    root.copySelected(root.activeModel.get(index))
   }
 
   function openIndex(index) {
-    if (index < 0 || index >= displayModel.count) return
-    root.openSelected(displayModel.get(index))
+    if (index < 0 || index >= root.activeModel.count) return
+    root.openSelected(root.activeModel.get(index))
   }
 
   function applySelected(row) {
-    if (root.historyActionBlocked()) return
     if (!row) return
+    if (root.shelfMode) {
+      root.opened = false
+      if (row.entryType === "image") {
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", row.mime, row.path])
+      } else {
+        var text = root.viewTextAt(row.historyIndex)
+        if (!text) return
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--shift-insert", text])
+      }
+      return
+    }
+    if (root.historyActionBlocked()) return
     root.opened = false
     if (row.entryType === "image") {
       Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", row.mime, row.path])
@@ -425,8 +943,19 @@ Item {
   }
 
   function copySelected(row) {
-    if (root.historyActionBlocked()) return
     if (!row) return
+    if (root.shelfMode) {
+      root.opened = false
+      if (row.entryType === "image") {
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
+      } else {
+        var text = root.viewTextAt(row.historyIndex)
+        if (!text) return
+        Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-text", "--copy-only", text])
+      }
+      return
+    }
+    if (root.historyActionBlocked()) return
     root.opened = false
     if (row.entryType === "image") {
       Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", "--copy-only", row.mime, row.path])
@@ -436,8 +965,9 @@ Item {
   }
 
   function openSelected(row) {
-    if (root.historyActionBlocked()) return
     if (!row) return
+    if (root.shelfMode) return
+    if (root.historyActionBlocked()) return
     root.opened = false
     Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-open", "--history-index", String(row.historyIndex)])
   }
@@ -446,7 +976,11 @@ Item {
     var row = root.selectedRow()
     if (!row) return
     if (row.entryType === "oversized") {
-      root.historyError = "Oversized clipboard text cannot be previewed"
+      var msg = root.shelfMode
+        ? "Oversized shelf text cannot be previewed"
+        : "Oversized clipboard text cannot be previewed"
+      if (root.shelfMode) root.shelvesError = msg
+      else root.historyError = msg
       return
     }
 
@@ -458,7 +992,7 @@ Item {
     root.expandedTotalLength = 0
 
     if (root.expandedKind === "text") {
-      var preview = ClipboardHistory.textPreview(root.history, row.historyIndex, 65536)
+      var preview = root.viewTextPreview(row.historyIndex, 65536)
       root.expandedText = preview.text
       root.expandedTruncated = preview.truncated
       root.expandedTotalLength = preview.totalLength
@@ -475,6 +1009,10 @@ Item {
   }
 
   function startEditor() {
+    if (root.shelfMode) {
+      root.startShelfRename()
+      return
+    }
     var row = root.selectedRow()
     if (!row || row.entryType === "image") return
     if (row.entryType === "oversized") {
@@ -502,6 +1040,7 @@ Item {
 
   function closeEditor() {
     root.cancelEditedHistoryAction()
+    if (root.shelfRenaming) root.cancelShelfRename()
     root.editorOpen = false
     root.editorError = ""
     root.editorAcceptedText = ""
@@ -510,6 +1049,11 @@ Item {
   }
 
   function finishEditing(copyOnly) {
+    if (root.shelfMode) {
+      root.finishShelfRename()
+      return
+    }
+
     if (root.historyActionBlocked()) {
       root.editorError = root.historyError
       return
@@ -595,9 +1139,14 @@ Item {
     Quickshell.execDetached(command)
   }
 
-  Component.onCompleted: root.scheduleHistoryReload()
+  Component.onCompleted: {
+    root.scheduleHistoryReload()
+    root.scheduleShelfReload()
+  }
 
   ListModel { id: displayModel }
+
+  ListModel { id: shelfModel }
 
   PointerMoveGate {
     id: pointerGate
@@ -622,6 +1171,24 @@ Item {
     }
   }
 
+  FileView {
+    id: shelfFile
+    path: root.shelfPath
+    watchChanges: true
+    preload: false
+    atomicWrites: true
+    printErrors: false
+    onFileChanged: root.scheduleShelfReload()
+    onSaved: {
+      if (root.shelfWritePending) root.shelfWriteReportedSaved = true
+      root.scheduleShelfReload()
+    }
+    onSaveFailed: {
+      if (root.shelfWritePending) root.shelfWriteFailed = true
+      root.scheduleShelfReload()
+    }
+  }
+
   Process {
     id: historyReadProcess
     command: []
@@ -630,6 +1197,16 @@ Item {
       waitForEnd: true
     }
     onExited: function(exitCode, exitStatus) { root.finishHistoryRead(exitCode) }
+  }
+
+  Process {
+    id: shelfReadProcess
+    command: []
+    stdout: StdioCollector {
+      id: shelfReadOutput
+      waitForEnd: true
+    }
+    onExited: function(exitCode, exitStatus) { root.finishShelfRead(exitCode) }
   }
 
   Timer {
@@ -648,6 +1225,25 @@ Item {
       root.historyReadTimedOut = true
       if (historyReadProcess.running) historyReadProcess.signal(9)
       else root.finishHistoryRead(-1)
+    }
+  }
+
+  Timer {
+    id: shelfReloadTimer
+    interval: 75
+    repeat: false
+    onTriggered: root.startShelfRead()
+  }
+
+  Timer {
+    id: shelfReadWatchdog
+    interval: 5000
+    repeat: false
+    onTriggered: {
+      if (!root.shelfReadInFlight) return
+      root.shelfReadTimedOut = true
+      if (shelfReadProcess.running) shelfReadProcess.signal(9)
+      else root.finishShelfRead(-1)
     }
   }
 
@@ -687,13 +1283,17 @@ Item {
       Item {
         id: keyCatcher
         anchors.fill: parent
-        z: root.clearConfirmOpen ? 20 : 0
+        z: root.modalOpen ? 20 : 0
         focus: true
 
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
           if (root.clearConfirmOpen) {
             if (clearConfirm.handleKey(event)) event.accepted = true
+            return
+          }
+          if (root.deleteShelfConfirmOpen) {
+            if (deleteShelfConfirm.handleKey(event)) event.accepted = true
             return
           }
 
@@ -720,8 +1320,28 @@ Item {
           if (root.editorOpen) return
 
           if (event.key === Qt.Key_Escape) {
-            if (root.filterText) root.setFilter("")
-            else root.close()
+            if (root.shelfMode) {
+              root.setShelfMode(false)
+              root.shelfNotice = ""
+            } else if (root.filterText) {
+              root.setFilter("")
+            } else {
+              root.close()
+            }
+            event.accepted = true
+          } else if (ctrl && !shift && !root.shelfMode && event.key === Qt.Key_S) {
+            root.shelvesError = ""
+            root.addSelectedToShelf()
+            event.accepted = true
+          } else if (!ctrl && !shift && !(event.modifiers & Qt.AltModifier)
+              && event.key === Qt.Key_S && !root.filterText) {
+            root.setShelfMode(!root.shelfMode)
+            event.accepted = true
+          } else if (ctrl && !shift && root.shelfMode && event.key === Qt.Key_Tab) {
+            root.cycleShelf(1)
+            event.accepted = true
+          } else if (ctrl && shift && root.shelfMode && event.key === Qt.Key_Tab) {
+            root.cycleShelf(-1)
             event.accepted = true
           } else if (ctrl && event.key === Qt.Key_J) {
             root.select(1)
@@ -736,7 +1356,8 @@ Item {
             root.startEditor()
             event.accepted = true
           } else if (ctrl && event.key === Qt.Key_R) {
-            root.scheduleHistoryReload()
+            if (root.shelfMode) root.scheduleShelfReload()
+            else root.scheduleHistoryReload()
             event.accepted = true
           } else if (ctrl && event.key === Qt.Key_1) {
             root.setTypeFilter("all")
@@ -757,8 +1378,13 @@ Item {
             root.setFilter(Util.editedFilter(event, root.filterText))
             event.accepted = true
           } else if (event.key === Qt.Key_Delete) {
-            if (shift) root.requestClearHistory()
-            else root.removeDisplayIndex(root.selectedIndex)
+            if (root.shelfMode) {
+              if (shift) root.requestDeleteShelf()
+              else root.shelfRemoveSelected()
+            } else {
+              if (shift) root.requestClearHistory()
+              else root.removeDisplayIndex(root.selectedIndex)
+            }
             event.accepted = true
           } else if (event.key === Qt.Key_Up) {
             root.select(-1)
@@ -776,13 +1402,19 @@ Item {
             root.selectAbsolute(0)
             event.accepted = true
           } else if (event.key === Qt.Key_End) {
-            root.selectAbsolute(displayModel.count - 1)
+            root.selectAbsolute(root.viewCount - 1)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.cursorActive && (event.modifiers & Qt.AltModifier)) root.openIndex(root.selectedIndex)
-            else if (root.cursorActive && shift) root.copyIndex(root.selectedIndex)
-            else if (root.cursorActive) root.activateIndex(root.selectedIndex)
-            else if (displayModel.count > 0) root.cursorActive = true
+            if (root.cursorActive && (event.modifiers & Qt.AltModifier)) {
+              if (root.shelfMode) root.pasteWholeShelf()
+              else root.openIndex(root.selectedIndex)
+            } else if (root.cursorActive && shift) {
+              root.copyIndex(root.selectedIndex)
+            } else if (root.cursorActive) {
+              root.activateIndex(root.selectedIndex)
+            } else if (root.viewCount > 0) {
+              root.cursorActive = true
+            }
             event.accepted = true
           } else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
             root.setFilter(root.filterText + event.text)
@@ -807,6 +1439,24 @@ Item {
           onCanceled: root.cancelClearHistory()
           onConfirmed: root.confirmClearHistory()
         }
+
+        ConfirmDialog {
+          id: deleteShelfConfirm
+          anchors.fill: parent
+          opened: root.deleteShelfConfirmOpen
+          z: 10
+          message: "Delete entire shelf “" + root.activeShelfName() + "”?"
+          confirmText: "Delete"
+          background: root.background
+          foreground: root.foreground
+          scrim: root.scrim
+          selectedBackground: root.selectedBackground
+          selectedText: root.selectedText
+          fontFamily: root.fontFamily
+          cornerRadius: root.cornerRadius
+          onCanceled: root.cancelDeleteShelf()
+          onConfirmed: root.confirmDeleteShelf()
+        }
       }
 
       Column {
@@ -825,15 +1475,44 @@ Item {
           spacing: Style.space(12)
 
           Text {
-            width: parent.width - filterLabel.width - parent.spacing
+            width: parent.width - filterLabel.width - shelfChip.width - parent.spacing * 2
             anchors.verticalCenter: parent.verticalCenter
-            text: root.filterText || "Search clipboard…"
+            text: root.filterText || (root.shelfMode ? "Search shelf…" : "Search clipboard…")
             textFormat: Text.PlainText
             color: root.foreground
             opacity: root.filterText ? 1 : 0.58
             font.family: root.fontFamily
             font.pixelSize: Style.font.heading
             elide: Text.ElideRight
+          }
+
+          Item {
+            id: shelfChip
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.shelfMode
+            width: visible ? Math.max(Style.space(84), chipText.implicitWidth + Style.space(20)) : 0
+            height: Style.space(26)
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Math.max(Style.space(4), height * 0.3)
+              color: Util.alpha(root.selectedBackground, 0.6)
+            }
+
+            Text {
+              id: chipText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(10)
+              text: "SHELF " + (root.activeShelfIndex + 1) + " · " + root.activeShelfName()
+              color: root.selectedText
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              elide: Text.ElideRight
+            }
           }
 
           Text {
@@ -865,7 +1544,7 @@ Item {
                 id: resultList
                 anchors.fill: parent
                 anchors.rightMargin: root.contentMargin
-                model: displayModel
+                model: root.activeModel
                 clip: true
                 spacing: Style.space(4)
                 boundsBehavior: Flickable.StopAtBounds
@@ -952,7 +1631,7 @@ Item {
               height: parent.height
               clip: true
 
-              property var activeRow: displayModel.count > 0 && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count ? displayModel.get(root.selectedIndex) : null
+              property var activeRow: root.activeModel.count > 0 && root.selectedIndex >= 0 && root.selectedIndex < root.activeModel.count ? root.activeModel.get(root.selectedIndex) : null
 
               Rectangle {
                 anchors.left: parent.left
@@ -1027,7 +1706,7 @@ Item {
           Column {
             anchors.centerIn: parent
             spacing: Style.space(8)
-            visible: displayModel.count === 0
+            visible: root.viewCount === 0
 
             Text {
               text: "󰅌"
@@ -1040,7 +1719,7 @@ Item {
             }
 
             Text {
-              text: root.emptyHistoryText()
+              text: root.shelfMode ? root.emptyShelfText() : root.emptyHistoryText()
               textFormat: Text.PlainText
               color: root.foreground
               opacity: 0.7
@@ -1055,10 +1734,12 @@ Item {
         Text {
           width: parent.width
           height: root.footerHeight
-          text: root.historyError || "Ctrl+J/K move  ·  Ctrl+Space expand  ·  Ctrl+E edit  ·  Ctrl+1–4 filter  ·  Enter paste  ·  Shift+Enter copy"
+          text: root.shelfMode
+            ? (root.shelfNotice || root.shelvesError || "S · back  ·  Ctrl+Tab switch  ·  Alt+Enter paste shelf  ·  Ctrl+E rename")
+            : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Ctrl+J/K move  ·  Ctrl+Space expand  ·  Ctrl+E edit  ·  Ctrl+1–4 filter  ·  Ctrl+S to shelf  ·  Enter paste"))
           textFormat: Text.PlainText
           color: root.foreground
-          opacity: root.historyError ? 0.9 : 0.5
+          opacity: (root.shelfMode && (root.shelvesError || root.shelfNotice)) || (root.historyError) ? 0.9 : 0.5
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
@@ -1081,7 +1762,7 @@ Item {
           anchors.right: parent.right
           anchors.top: parent.top
           height: root.headerHeight
-          text: root.expandedKind === "image" ? "Image preview" : root.expandedKind === "color" ? "Color preview" : "Text preview"
+          text: root.expandedKind === "image" ? "Image preview" : root.expandedKind === "color" ? "Color preview" : (root.shelfMode ? "Shelf text preview" : "Text preview")
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.heading
@@ -1193,7 +1874,7 @@ Item {
           anchors.right: parent.right
           anchors.top: parent.top
           height: root.headerHeight
-          text: "Edit clipboard text"
+          text: root.shelfRenaming ? "Rename shelf" : "Edit clipboard text"
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.heading
@@ -1204,7 +1885,9 @@ Item {
         Text {
           anchors.right: parent.right
           anchors.verticalCenter: editorTitle.verticalCenter
-          text: "Ctrl+Enter paste  ·  Ctrl+Shift+Enter or Ctrl+S copy  ·  Esc cancel"
+          text: root.shelfRenaming
+            ? "Ctrl+Enter save  ·  Esc cancel"
+            : "Ctrl+Enter save & paste  ·  Ctrl+Shift+Enter save & copy  ·  Esc cancel"
           color: root.foreground
           opacity: 0.5
           font.family: root.fontFamily
@@ -1245,17 +1928,20 @@ Item {
 
               onTextChanged: {
                 if (root.editorTextGuardActive) return
-                if (text.length <= ClipboardHistory.maxEntryTextLength) {
+                var limit = root.shelfRenaming ? ClipboardShelf.maxShelfNameLength : ClipboardHistory.maxEntryTextLength
+                var exceedMessage = root.shelfRenaming
+                  ? "Shelf name exceeded " + ClipboardShelf.maxShelfNameLength + " characters"
+                  : "Clipboard text exceeds the 1 MiB limit"
+                if (text.length <= limit) {
                   root.editorAcceptedText = text
-                  if (root.editorError === "Clipboard text exceeds the 1 MiB limit")
-                    root.editorError = ""
+                  if (root.editorError === exceedMessage) root.editorError = ""
                   return
                 }
 
                 root.editorTextGuardActive = true
                 text = root.editorAcceptedText
                 root.editorTextGuardActive = false
-                root.editorError = "Clipboard text exceeds the 1 MiB limit"
+                root.editorError = exceedMessage
               }
 
               onCursorRectangleChanged: {
@@ -1277,9 +1963,6 @@ Item {
                   event.accepted = true
                 } else if (ctrl && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
                   root.finishEditing(false)
-                  event.accepted = true
-                } else if (ctrl && event.key === Qt.Key_S) {
-                  root.finishEditing(true)
                   event.accepted = true
                 }
               }

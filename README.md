@@ -1,8 +1,8 @@
 # Clipboard Plus & shelf
 
 A keyboard-first overlay for Omarchy Quattro's clipboard history, with type
-filters, large text and image previews, color swatches, and inline text
-editing.
+filters, large text and image previews, color swatches, inline text editing,
+and a persistent multi-shelf organizer.
 
 ![Clipboard Plus overlay](preview.png)
 
@@ -18,6 +18,15 @@ helpers, so it does not start another `wl-paste` watcher or Quickshell process.
 - Preview long text, images, and detected colors without leaving the overlay
 - Edit text before copying or pasting it
 - Paste, copy, open, remove, or clear history entries from the keyboard
+- **Persistent shelves:** organize clipboard items into named shelves that
+  survive reboots (`~/.local/state/omarchy/clipboard-shelf.json`)
+  - add the selected history item to the active shelf with `Ctrl+S`
+  - toggle between clipboard and shelf mode with `S` (when no search is active)
+  - switch the active shelf with `Ctrl+Tab` / `Ctrl+Shift+Tab`
+  - paste a single shelf item with `Enter`, copy with `Shift+Enter`, or paste
+    the entire shelf with `Alt+Enter`
+  - rename the active shelf with `Ctrl+E`, remove an item with `Delete`, and
+    delete a whole shelf with `Shift+Delete`
 - Follow the active Omarchy theme through the shell's shared UI components
 
 ## Requirements
@@ -80,12 +89,20 @@ plugin IDs remain separate; this only shares the compositor rule.
 | `Ctrl+R` | Reload history from disk |
 | `Delete` | Remove the selected history entry |
 | `Shift+Delete` | Confirm clearing all history |
-| `Escape` | Clear the search, close a detail view, or close the overlay |
+| `Escape` | Clear the search, close a detail view, exit shelf mode, or close the overlay |
+| `Ctrl+S` | Add the selected history entry to the active shelf |
+| `S` | Toggle between clipboard history and the shelf (when no search is active) |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Switch the active shelf (in shelf mode) |
+| `Alt+Enter` | Paste the entire active shelf (in shelf mode) |
+
+In shelf mode the same navigation, filtering, and preview shortcuts operate on
+the active shelf's items. `Delete` removes the selected shelf item,
+`Shift+Delete` deletes the whole shelf, and `Ctrl+E` renames it.
 
 In the text editor:
 
-- `Ctrl+Enter` pastes the edited text.
-- `Ctrl+Shift+Enter` or `Ctrl+S` copies the edited text.
+- `Ctrl+Enter` pastes the edited text (or saves a shelf rename).
+- `Ctrl+Shift+Enter` copies the edited text.
 - `Escape` cancels editing.
 
 ## Privacy and permissions
@@ -142,6 +159,7 @@ root:
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" Clipboard.qml
 node tests/clipboard-history.js
+node tests/clipboard-shelf.js
 ```
 
 Before releasing, also exercise open, close, paste, copy, edit, disable,

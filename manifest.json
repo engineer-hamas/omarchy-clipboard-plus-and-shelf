@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "engineer-hamas.clipboard-shelf",
   "name": "Clipboard Plus & shelf",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Hamas Munawar",
   "license": "MIT",
-  "description": "Omarchy clipboard history with color swatches, filters, expanded previews, and text editing.",
+  "description": "Omarchy clipboard history with color swatches, filters, expanded previews, text editing, and a persistent multi-shelf feature.",
   "kinds": ["overlay"],
   "keepLoaded": true,
   "entryPoints": {
