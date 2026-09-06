@@ -21,7 +21,8 @@ helpers, so it does not start another `wl-paste` watcher or Quickshell process.
 - **Persistent shelves:** organize clipboard items into named shelves that
   survive reboots (`~/.local/state/omarchy/clipboard-shelf.json`)
   - add the selected history item to the active shelf with `Ctrl+S`
-  - toggle between clipboard and shelf mode with `S` (when no search is active)
+  - toggle between clipboard and shelf mode with `Ctrl+Shift+S`
+  - create a new shelf with `Ctrl+N` (auto-named, up to 9 shelves)
   - switch the active shelf with `Ctrl+Tab` / `Ctrl+Shift+Tab`
   - paste a single shelf item with `Enter`, copy with `Shift+Enter`, or paste
     the entire shelf with `Alt+Enter`
@@ -91,7 +92,8 @@ plugin IDs remain separate; this only shares the compositor rule.
 | `Shift+Delete` | Confirm clearing all history |
 | `Escape` | Clear the search, close a detail view, exit shelf mode, or close the overlay |
 | `Ctrl+S` | Add the selected history entry to the active shelf |
-| `S` | Toggle between clipboard history and the shelf (when no search is active) |
+| `Ctrl+Shift+S` | Toggle between clipboard history and the shelf |
+| `Ctrl+N` | Create a new shelf (auto-named, switches to it) |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Switch the active shelf (in shelf mode) |
 | `Alt+Enter` | Paste the entire active shelf (in shelf mode) |
 

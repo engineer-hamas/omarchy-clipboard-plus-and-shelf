@@ -32,6 +32,31 @@ assert.equal(shelf.normalizedShelfName("x".repeat(80)).length, 64);
 assert.deepEqual(shelf.ensureShelf([]), [{ name: "Default", items: [] }]);
 assert.equal(shelf.ensureShelf([shelf.defaultShelf()]).length, 1);
 
+assert.equal(shelf.nextShelfName([]), "Shelf 1");
+assert.equal(shelf.nextShelfName([{ name: "Shelf 1", items: [] }]), "Shelf 2");
+assert.equal(
+  shelf.nextShelfName([
+    { name: "Shelf 1", items: [] },
+    { name: "Shelf 2", items: [] },
+    { name: "Work", items: [] }
+  ]),
+  "Shelf 3"
+);
+
+let created = shelf.addShelf([]);
+assert.equal(created.status, "ok");
+assert.equal(created.index, 0);
+assert.deepEqual(created.shelves, [{ name: "Shelf 1", items: [] }]);
+
+created = shelf.addShelf(Array.from({ length: 9 }, (_, i) => ({ name: "S" + i, items: [] })));
+assert.equal(created.status, "full");
+assert.equal(created.index, -1);
+
+const withItems = shelf.addShelf([{ name: "Default", items: [{ type: "text", text: "hi" }] }]);
+assert.equal(withItems.status, "ok");
+assert.equal(withItems.index, 1);
+assert.deepEqual(withItems.shelves[1], { name: "Shelf 1", items: [] });
+
 const basic = parsedShelves([
   { name: "Default", items: [{ type: "text", text: "hello" }] },
   { name: "Projects", items: [{ type: "image", path: "/tmp/a.png", mime: "image/png" }] }

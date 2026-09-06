@@ -168,6 +168,25 @@ function removeShelf(shelves, index) {
   return next
 }
 
+function nextShelfName(shelves) {
+  var taken = {}
+  var values = Array.isArray(shelves) ? shelves : []
+  for (var i = 0; i < values.length; i++) taken[normalizedShelfName(values[i].name)] = true
+  for (var n = 1; n <= maxShelves + 1; n++) {
+    var candidate = "Shelf " + n
+    if (!taken[candidate]) return candidate
+  }
+  return "Shelf " + (values.length + 1)
+}
+
+function addShelf(shelves) {
+  var values = Array.isArray(shelves) ? shelves : []
+  if (values.length >= maxShelves) return { status: "full", shelves: values, index: -1 }
+  var next = values.slice()
+  next.push({ name: nextShelfName(values), items: [] })
+  return { status: "ok", shelves: next, index: next.length - 1 }
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     maxShelves: maxShelves,
@@ -183,6 +202,8 @@ if (typeof module !== "undefined") {
     shelfWriteDisposition: shelfWriteDisposition,
     replaceShelfItems: replaceShelfItems,
     renameShelf: renameShelf,
-    removeShelf: removeShelf
+    removeShelf: removeShelf,
+    nextShelfName: nextShelfName,
+    addShelf: addShelf
   }
 }

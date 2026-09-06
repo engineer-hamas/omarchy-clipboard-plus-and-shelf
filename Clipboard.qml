@@ -620,6 +620,32 @@ Item {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
+  function newShelf() {
+    if (!root.shelfWritable()) {
+      root.shelvesError = root.shelvesError || "Shelves are not ready yet"
+      return
+    }
+    var created = ClipboardShelf.addShelf(root.shelves)
+    if (created.status !== "ok") {
+      root.shelvesError = "Maximum of " + root.shelfMaxCount + " shelves reached; delete one first"
+      return
+    }
+
+    var previous = root.shelves
+    root.shelves = created.shelves
+    if (!root.saveShelves()) {
+      root.shelves = previous
+      return
+    }
+
+    root.activeShelfIndex = created.index
+    root.selectedIndex = 0
+    root.cursorActive = false
+    if (!root.shelfMode) root.setShelfMode(true)
+    else root.rebuildShelfDisplay()
+    root.shelfNotice = "Created “" + root.activeShelfName() + "”"
+  }
+
   function cycleShelf(delta) {
     if (root.shelves.length <= 1) return
     var next = (root.activeShelfIndex + delta + root.shelves.length) % root.shelves.length
@@ -1333,9 +1359,11 @@ Item {
             root.shelvesError = ""
             root.addSelectedToShelf()
             event.accepted = true
-          } else if (!ctrl && !shift && !(event.modifiers & Qt.AltModifier)
-              && event.key === Qt.Key_S && !root.filterText) {
+          } else if (ctrl && shift && event.key === Qt.Key_S) {
             root.setShelfMode(!root.shelfMode)
+            event.accepted = true
+          } else if (ctrl && event.key === Qt.Key_N) {
+            root.newShelf()
             event.accepted = true
           } else if (ctrl && !shift && root.shelfMode && event.key === Qt.Key_Tab) {
             root.cycleShelf(1)
@@ -1735,8 +1763,8 @@ Item {
           width: parent.width
           height: root.footerHeight
           text: root.shelfMode
-            ? (root.shelfNotice || root.shelvesError || "S · back  ·  Ctrl+Tab switch  ·  Alt+Enter paste shelf  ·  Ctrl+E rename")
-            : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Ctrl+J/K move  ·  Ctrl+Space expand  ·  Ctrl+E edit  ·  Ctrl+1–4 filter  ·  Ctrl+S to shelf  ·  Enter paste"))
+            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+Tab switch · Ctrl+N new shelf · Alt+Enter paste shelf · Ctrl+E rename")
+            : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Ctrl+J/K move · Ctrl+Space expand · Ctrl+E edit · Ctrl+1–4 filter · Ctrl+S to shelf · Ctrl+Shift+S shelf · Enter paste"))
           textFormat: Text.PlainText
           color: root.foreground
           opacity: (root.shelfMode && (root.shelvesError || root.shelfNotice)) || (root.historyError) ? 0.9 : 0.5
