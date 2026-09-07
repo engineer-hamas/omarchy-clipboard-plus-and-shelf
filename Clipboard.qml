@@ -714,7 +714,6 @@ Item {
 
   function pasteWholeShelf() {
     var items = root.activeShelfItems()
-    console.warn("PWS-CALL items=" + items.length + " mode=" + root.shelfMode)
     if (items.length === 0) {
       root.shelvesError = "Shelf “" + root.activeShelfName() + "” is empty"
       return
@@ -730,7 +729,6 @@ Item {
         textParts.push(item.text || "")
       }
     }
-    console.warn("PWS-PASTE text=" + textParts.length + " images=" + images.length)
     root.opened = false
     if (textParts.length > 0) {
       Quickshell.execDetached([
@@ -1435,7 +1433,6 @@ Item {
             root.selectAbsolute(root.viewCount - 1)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            console.warn("PWS-KEY ctrl=" + ctrl + " shift=" + shift + " active=" + root.cursorActive + " shelf=" + root.shelfMode)
             if (root.cursorActive && ctrl && shift) {
               if (root.shelfMode) root.pasteWholeShelf()
             } else if (root.cursorActive && shift) {
