@@ -730,6 +730,7 @@ Item {
       }
     }
     root.opened = false
+    Quickshell.execDetached(["/bin/bash", "-c", "sleep 0.35; echo '--- '$(date +%T); hyprctl activewindow -j 2>&1 | jq -r '.class + \" | \" + (.title // .initialTitle // \"\")' >> /tmp/owshelf-focus.txt"])
     if (textParts.length > 0) {
       Quickshell.execDetached([
         root.omarchyPath + "/bin/omarchy-clipboard-paste-text",
