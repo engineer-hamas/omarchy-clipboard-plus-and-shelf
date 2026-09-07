@@ -1763,8 +1763,8 @@ Item {
           width: parent.width
           height: root.footerHeight
           text: root.shelfMode
-            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+Tab switch · Ctrl+N new shelf · Alt+Enter paste shelf · Ctrl+E rename")
-            : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Ctrl+J/K move · Ctrl+Space expand · Ctrl+E edit · Ctrl+1–4 filter · Ctrl+S to shelf · Ctrl+Shift+S shelf · Enter paste"))
+            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+N new · Ctrl+Tab switch · Ctrl+E rename · Alt+Enter paste shelf")
+            : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Enter paste · Ctrl+J/K move · Ctrl+E edit · Ctrl+Space expand · Ctrl+S to shelf · Ctrl+Shift+S show shelf"))
           textFormat: Text.PlainText
           color: root.foreground
           opacity: (root.shelfMode && (root.shelvesError || root.shelfNotice)) || (root.historyError) ? 0.9 : 0.5
