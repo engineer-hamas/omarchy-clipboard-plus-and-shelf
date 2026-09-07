@@ -1765,7 +1765,7 @@ Item {
           width: parent.width
           height: root.footerHeight
           text: root.shelfMode
-            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+N new · Ctrl+Tab switch · Ctrl+E rename · Ctrl+Shift+Enter paste shelf")
+            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+Tab switch · Ctrl+N new · Ctrl+E rename · Shift+Delete delete · Ctrl+Shift+Enter paste shelf")
             : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Enter paste · Ctrl+J/K move · Ctrl+E edit · Ctrl+Space expand · Alt+O open source · Ctrl+S to shelf · Ctrl+Shift+S show shelf"))
           textFormat: Text.PlainText
           color: root.foreground
