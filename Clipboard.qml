@@ -1433,7 +1433,7 @@ Item {
             root.selectAbsolute(root.viewCount - 1)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.cursorActive && ctrl) {
+            if (root.cursorActive && ctrl && shift) {
               if (root.shelfMode) root.pasteWholeShelf()
             } else if (root.cursorActive && shift) {
               root.copyIndex(root.selectedIndex)
@@ -1765,7 +1765,7 @@ Item {
           width: parent.width
           height: root.footerHeight
           text: root.shelfMode
-            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+N new · Ctrl+Tab switch · Ctrl+E rename · Ctrl+Enter paste shelf")
+            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+N new · Ctrl+Tab switch · Ctrl+E rename · Ctrl+Shift+Enter paste shelf")
             : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Enter paste · Ctrl+J/K move · Ctrl+E edit · Ctrl+Space expand · Alt+O open source · Ctrl+S to shelf · Ctrl+Shift+S show shelf"))
           textFormat: Text.PlainText
           color: root.foreground

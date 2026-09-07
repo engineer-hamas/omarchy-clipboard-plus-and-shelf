@@ -25,7 +25,7 @@ helpers, so it does not start another `wl-paste` watcher or Quickshell process.
   - create a new shelf with `Ctrl+N` (auto-named, up to 9 shelves)
   - switch the active shelf with `Ctrl+Tab` / `Ctrl+Shift+Tab`
   - paste a single shelf item with `Enter`, copy with `Shift+Enter`, or paste
-    the entire shelf with `Ctrl+Enter`
+    the entire shelf with `Ctrl+Shift+Enter`
   - rename the active shelf with `Ctrl+E`, remove an item with `Delete`, and
     delete a whole shelf with `Shift+Delete`
 - Follow the active Omarchy theme through the shell's shared UI components
@@ -95,7 +95,7 @@ plugin IDs remain separate; this only shares the compositor rule.
 | `Ctrl+Shift+S` | Toggle between clipboard history and the shelf |
 | `Ctrl+N` | Create a new shelf (auto-named, switches to it) |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Switch the active shelf (in shelf mode) |
-| `Ctrl+Enter` | Paste the entire active shelf (in shelf mode) |
+| `Ctrl+Shift+Enter` | Paste the entire active shelf (in shelf mode) |
 
 In shelf mode the same navigation, filtering, and preview shortcuts operate on
 the active shelf's items. `Delete` removes the selected shelf item,
