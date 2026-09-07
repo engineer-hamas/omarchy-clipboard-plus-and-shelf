@@ -1433,9 +1433,8 @@ Item {
             root.selectAbsolute(root.viewCount - 1)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.cursorActive && (event.modifiers & Qt.AltModifier)) {
+            if (root.cursorActive && ctrl) {
               if (root.shelfMode) root.pasteWholeShelf()
-              else root.openIndex(root.selectedIndex)
             } else if (root.cursorActive && shift) {
               root.copyIndex(root.selectedIndex)
             } else if (root.cursorActive) {
@@ -1443,6 +1442,9 @@ Item {
             } else if (root.viewCount > 0) {
               root.cursorActive = true
             }
+            event.accepted = true
+          } else if (ctrl && !shift && event.key === Qt.Key_O && !root.shelfMode) {
+            root.openIndex(root.selectedIndex)
             event.accepted = true
           } else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
             root.setFilter(root.filterText + event.text)
@@ -1763,8 +1765,8 @@ Item {
           width: parent.width
           height: root.footerHeight
           text: root.shelfMode
-            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+N new · Ctrl+Tab switch · Ctrl+E rename · Alt+Enter paste shelf")
-            : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Enter paste · Ctrl+J/K move · Ctrl+E edit · Ctrl+Space expand · Ctrl+S to shelf · Ctrl+Shift+S show shelf"))
+            ? (root.shelfNotice || root.shelvesError || "Ctrl+Shift+S back · Ctrl+N new · Ctrl+Tab switch · Ctrl+E rename · Ctrl+Enter paste shelf")
+            : (root.historyError || (root.shelfNotice ? root.shelfNotice : "Enter paste · Ctrl+J/K move · Ctrl+E edit · Ctrl+Space expand · Alt+O open source · Ctrl+S to shelf · Ctrl+Shift+S show shelf"))
           textFormat: Text.PlainText
           color: root.foreground
           opacity: (root.shelfMode && (root.shelvesError || root.shelfNotice)) || (root.historyError) ? 0.9 : 0.5
